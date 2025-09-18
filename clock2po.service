@@ -1,0 +1,15 @@
+[Unit]
+Description=MIDI clock -> Pocket Operator sync (audio clicks)
+After=sound.target
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/bin/clock2po_generic.py
+Restart=always
+RestartSec=1
+# Optional tighter timing:
+# CPUSchedulingPolicy=fifo
+# CPUSchedulingPriority=50
+# IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target
