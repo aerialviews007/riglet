@@ -17,7 +17,7 @@ def should_ignore(name: str) -> bool:
     return any(re.search(p, name, re.I) for p in IGNORE)
 
 # ---- Prepare ALSA ----
-pcm = alsaaudio.PCM(alsaaudio.PCM_PLAYBACK, card=CARD)
+pcm = alsaaudio.PCM(alsaaudio.PCM_PLAYBACK, device=CARD)
 pcm.setchannels(2)
 pcm.setrate(SAMPLE_RATE)
 pcm.setformat(alsaaudio.PCM_FORMAT_S16_LE)
@@ -76,6 +76,7 @@ def listener(port_name: str):
         print(f"[clock2po] {port_name} closed ({e})", file=sys.stderr)
 
 def main():
+    global current_source
     spawned = set()  # ports we started threads for
     while True:
         try:
