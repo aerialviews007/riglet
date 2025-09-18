@@ -1,0 +1,11 @@
+[Unit]
+Description=Generic MIDI auto-patcher (all readable -> all writable)
+After=multi-user.target
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/bin/midi_autopatch_generic.py
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
