@@ -1,6 +1,8 @@
 #!/bin/bash
 set -Eeuo pipefail
 
+trap 'echo "Installer failed on line $LINENO"; exit 1' ERR
+
 # --- CONFIG ---
 SRC_DIR="$(pwd)"                       # run from repo root
 DEST_BIN="/usr/local/bin"
@@ -13,6 +15,8 @@ OPT_SVC="sensehat-monitor.service"
 
 # --- Helpers ---
 die() { echo "Error: $*" >&2; exit 1; }
+
+command -v python3 >/dev/null 2>&1 || die "python3 not found (unexpected on Pi OS)"
 
 need_file() {
   local f="$1"
