@@ -4,6 +4,7 @@
 # - Installs Python scripts
 # - Creates/updates systemd services
 # - Enables services
+# - Applies slim boot tweaks by default
 
 set -euo pipefail
 
@@ -91,13 +92,43 @@ ensure_asound_default() {
   # Only create /etc/asound.conf if it doesn't exist; we won't clobber user config.
   if [[ ! -f /etc/asound.conf ]]; then
     echo ">>> Creating /etc/asound.conf (defaults to card 0)."
-    # If Pirate Audio is card 1 on your system, change 'card 0' to 'card 1' after install.
     cat > /etc/asound.conf <<'EOF'
 pcm.!default { type hw card 0 }
 ctl.!default { type hw card 0 }
 EOF
   else
     echo ">>> /etc/asound.conf already exists; leaving it untouched."
+  fi
+}
+
+detect_cmdline_path() {
+  if [[ -f /boot/firmware/cmdline.txt ]]; then
+    echo "/boot/firmware/cmdline.txt"
+  elif [[ -f /boot/cmdline.txt ]]; then
+    echo "/boot/cmdline.txt"
+  else
+    echo ""
+  fi
+}
+
+apply_slim_boot() {
+  echo ">>> Slim-boot: disabling bluetooth, avahi-daemon, triggerhappy"
+  systemctl disable --now bluetooth 2>/dev/null || true
+  systemctl disable --now avahi-daemon 2>/dev/null || true
+  systemctl disable --now triggerhappy 2>/dev/null || true
+
+  local CMDLINE
+  CMDLINE="$(detect_cmdline_path)"
+  if [[ -n "$CMDLINE" ]]; then
+    echo ">>> Slim-boot: updating $CMDLINE (add systemd.networkd.wait-online=0 if missing)"
+    if ! grep -q 'systemd.networkd.wait-online=0' "$CMDLINE"; then
+      # cmdline is a single line; append safely with a leading space
+      sed -i '1 s|$| systemd.networkd.wait-online=0|' "$CMDLINE"
+    else
+      echo ">>> Already present in cmdline."
+    fi
+  else
+    echo ">>> WARNING: cmdline.txt not found; skipping network-wait tweak."
   fi
 }
 
@@ -113,11 +144,11 @@ post_notes() {
   echo "============================================"
   echo " Riglet install complete."
   echo "--------------------------------------------"
-  echo "• Verify your Pirate Audio DAC overlay:"
+  echo "• Verify Pirate Audio DAC overlay (installed via Pimoroni script):"
   echo "    sudo dtoverlay -l   # should list hifiberry-dac"
   echo "    aplay -l            # should show sndrpihifiberry"
   echo
-  echo "• If speaker-test fails with 'device busy', stop Riglet temporarily:"
+  echo "• If the DAC is busy during tests:"
   echo "    sudo systemctl stop clock2po.service"
   echo "    speaker-test -D default -c 2 -t wav"
   echo
@@ -128,6 +159,10 @@ post_notes() {
   echo "• Logs:"
   echo "    journalctl -u midi-autopatch.service -f"
   echo "    journalctl -u clock2po.service -f"
+  echo
+  echo "• Slim boot applied:"
+  echo "    - bluetooth, avahi-daemon, triggerhappy disabled"
+  echo "    - systemd.networkd.wait-online=0 appended to cmdline"
   echo "============================================"
 }
 
@@ -138,6 +173,7 @@ main() {
   install_bins
   write_services
   ensure_asound_default
+  apply_slim_boot         # default ON
   enable_services
   post_notes
 }
