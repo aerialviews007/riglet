@@ -1,76 +1,112 @@
 #!/usr/bin/env python3
-import subprocess, time, re, sys
+"""
+Riglet: MIDI Autopatch (generic, robust)
 
-# Ignore common virtual/system endpoints
-IGNORE = [r"Through", r"Virtual", r"System"]
+- Auto-connects every real MIDI input to every real MIDI output.
+- Ignores 'Through', 'Virtual', etc.
+- Hot-plug safe (polls ALSA aconnect).
+- Avoids duplicate connections by reading existing links correctly.
+"""
+
+import time, re, sys, subprocess
+from typing import Set, Tuple, Dict
+
+SCAN_SEC = 1.0
+IGNORE_PATTERNS = [r'RtMidi', r'Through', r'Virtual', r'System', r'Announce', r'Midi Through']
+
+def log(*a): 
+    print("[midi-autopatch]", *a, file=sys.stderr, flush=True)
 
 def should_ignore(name: str) -> bool:
-    return any(re.search(p, name, re.I) for p in IGNORE)
+    return any(re.search(p, name, re.I) for p in IGNORE_PATTERNS)
 
-def parse_aconnect(flag: str):
-    """
-    flag: '-i' => readable inputs (sources)
-          '-o' => writable outputs (destinations)
-    returns list of ('client:port', 'Device Name')
-    """
-    out = subprocess.run(["aconnect", flag], capture_output=True, text=True).stdout
-    results = []
-    cur = None
-    for line in out.splitlines():
-        if line.startswith("client "):
-            # e.g., "client 20: 'Device Name'"
+def list_ports() -> Tuple[Set[str], Set[str]]:
+    """Return sets of ALSA client:port ids (e.g., '20:0') for inputs and outputs that aren't ignored."""
+    try:
+        ins_txt  = subprocess.check_output(["aconnect", "-i"], text=True)
+        outs_txt = subprocess.check_output(["aconnect", "-o"], text=True)
+    except Exception as e:
+        log("aconnect query failed:", e)
+        return set(), set()
+
+    def parse(text: str) -> Dict[str,str]:
+        mapping: Dict[str,str] = {}
+        cur_client = None
+        for line in text.splitlines():
             m = re.match(r"client\s+(\d+):\s+'([^']+)'", line)
             if m:
-                cur = (m.group(1), m.group(2))  # (client_id, name)
-        else:
-            # Port line; robustly capture leading integer with or without colon
-            m = re.match(r"^\s*(\d+)\s*:?", line)
-            if m and cur:
-                port = m.group(1)
-                cid, name = cur
-                if not should_ignore(name):
-                    results.append((f"{cid}:{port}", name))
-    return results
+                cur_client = (m.group(1), m.group(2))
+                continue
+            m = re.match(r"\s*(\d+)\s+'([^']+)'", line)
+            if m and cur_client:
+                port, pname = m.group(1), m.group(2)
+                cid = f"{cur_client[0]}:{port}"
+                mapping[cid] = f"{cid} {cur_client[1]} {pname}"
+        return mapping
 
-def connect(src: str, dst: str):
-    # aconnect prints errors for invalid/duplicate pairs; silence them.
-    subprocess.run(["aconnect", src, dst],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    in_map  = parse(ins_txt)
+    out_map = parse(outs_txt)
+
+    ins  = {k for k,v in in_map.items()  if not should_ignore(v)}
+    outs = {k for k,v in out_map.items() if not should_ignore(v)}
+    return ins, outs
+
+def existing_connections() -> Set[Tuple[str,str]]:
+    """Return set of (src_id, dst_id) like ('20:0','24:0')."""
+    try:
+        txt = subprocess.check_output(["aconnect", "-l"], text=True)
+    except Exception:
+        return set()
+    pairs: Set[Tuple[str,str]] = set()
+    cur_client = None
+    cur_src = None
+    for line in txt.splitlines():
+        m = re.match(r"client\s+(\d+):\s+'([^']+)'", line)
+        if m:
+            cur_client = m.group(1)
+            cur_src = None
+            continue
+        m = re.match(r"\s*(\d+)\s+'([^']+)'", line)
+        if m and cur_client is not None:
+            cur_src = f"{cur_client}:{m.group(1)}"
+            continue
+        if "Connecting To:" in line and cur_src:
+            for mm in re.finditer(r"(\d+):(\d+)", line):
+                dst = f"{mm.group(1)}:{mm.group(2)}"
+                pairs.add((cur_src, dst))
+    return pairs
+
+def connect(src: str, dst: str) -> bool:
+    try:
+        subprocess.check_call(["aconnect", src, dst])
+        log("connected:", src, "->", dst)
+        return True
+    except subprocess.CalledProcessError:
+        return False  # already connected or transient error
 
 def main():
-    seen = set()
+    log("starting…")
+    known: Set[Tuple[str,str]] = set()
     while True:
-        try:
-            sources = parse_aconnect("-i")   # readable (sources)
-            sinks   = parse_aconnect("-o")   # writable (destinations)
+        ins, outs = list_ports()
+        if not ins and not outs:
+            time.sleep(SCAN_SEC); continue
 
-            # --- Guard: if either side empty, skip this cycle ---
-            if not sources or not sinks:
-                time.sleep(2)
-                continue
-
-            current_pairs = set()
-            for s_id, s_name in sources:
-                s_client = s_id.split(":")[0]
-                for d_id, d_name in sinks:
-                    d_client = d_id.split(":")[0]
-                    # avoid self-loop and ignored endpoints
-                    if s_client == d_client:
-                        continue
-                    if should_ignore(s_name) or should_ignore(d_name):
-                        continue
-                    pair = (s_id, d_id)
-                    current_pairs.add(pair)
-                    if pair not in seen:
-                        connect(*pair)
-
-            # Prune cache to only pairs that still make sense
-            seen = seen & current_pairs
-
-        except Exception as e:
-            print(f"[autopatch] warning: {e}", file=sys.stderr)
-
-        time.sleep(2)
+        current = existing_connections()
+        known |= current
+        made = 0
+        for s in sorted(ins):
+            for d in sorted(outs):
+                if s == d: continue
+                if (s,d) in known or (s,d) in current: continue
+                if connect(s,d):
+                    known.add((s,d)); made += 1
+        if made:
+            log(f"patched {made} new link(s). inputs={len(ins)} outputs={len(outs)} total_links={len(known)}")
+        time.sleep(SCAN_SEC)
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        log("exiting.")
