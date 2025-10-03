@@ -1,15 +1,16 @@
 [Unit]
-Description=MIDI clock -> Pocket Operator sync (audio clicks)
-After=sound.target
+Description=MIDI clock -> Pocket Operator sync (Pirate Audio DAC)
+After=multi-user.target sound.target
+Wants=sound.target
 
 [Service]
+Type=simple
+# Wait (up to 30s) for an ALSA card so the script doesn't crash on boot
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 30); do aplay -l >/dev/null 2>&1 && exit 0; sleep 1; done; echo "No ALSA card found" >&2; exit 1'
+# Start the click generator (update path if you placed the script elsewhere)
 ExecStart=/usr/bin/python3 /usr/local/bin/clock2po_generic.py
 Restart=always
 RestartSec=1
-# Optional tighter timing:
-# CPUSchedulingPolicy=fifo
-# CPUSchedulingPriority=50
-# IOSchedulingClass=idle
 
 [Install]
 WantedBy=multi-user.target
